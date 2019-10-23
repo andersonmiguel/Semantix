@@ -1,0 +1,170 @@
+#########################################################################
+Perguntas e Respostas do Questionário
+#########################################################################
+1. Qual o objetivo do comando cache em Spark?
+
+Seu objetivo principal é armazenar resultados de operações presentes no código em memória para reutilização durante o fluxo de processamento, evitando diversos acessos aos discos para uma mesma instrução. Muitas operações em um RDD são denominadas lazy, que significa abstrações para um conjunto de instruções a serem executadas. Se não utilizarmos o comando cache para essas instruções, teremos um aumento de instruções de I/O nos discos, deixando a performance do nosso código mais baixa, além de aumentar os custos de processamento e armazenamento de áreas temporárias.
+
+2. O mesmo código implementado em Spark é normalmente mais rápido que a implementação equivalente em MapReduce. Por quê?
+
+Seguindo com o mesmo principio da questão anterior, o MapReduce utiliza o armazenamento em disco para gravar suas interações (ou resultados temporários), aumentando o consumo de I/O e processamento, deixando o processo mais lento.
+Spark, por outro lado, permite que resultados intermediários sejam passados diretamente entre as operações a serem executadas através do caching desses dados em memória, ou até mesmo que diversas operações possam ser executadas sobre um mesmo conjunto de dados em cache, reduzindo a necessidade de operações de I/O em disco. Um Adicionando mais um cenário, para cada job MapReduce executado, uma nova instância da JVM é iniciada, enquanto Spark mantém a JVM em constantemente em execução em cada nó, precisando apenas iniciar uma nova thread, ação bem mais performática.
+
+3. Qual é a função do SparkContext ?
+
+O SparkContext funciona como um client do ambiente de execução Spark. Podemos criar variaveis, executar jobs, passar configurações de alocação de recursos como memória e executores, criar RDDs etc.
+
+4. Explique com suas palavras o que é Resilient Distributed Datasets (RDD)
+
+Coleção de objetos somente leitura, particionados em um conjunto de nodes do cluster, podendo somente  ser criado através de funções determinísticas (map, filter, join, groupBy) executadas em outros RDDs ou meios de armazenamentos estáveis como o Hadoop Filesystem. Basicamente, suportam dois tipos de operações: Transformations (map, filter, join, union, etc) e Actions (reduce, count, first, etc).
+
+5. GroupByKey é menos eficiente que reduceByKey em grandes dataset. Por quê?
+
+reduceByKey faz uma agregação prévia em cada node antes de fazer uma agregação final, diminuindo o tráfego de dados entre os nodes.
+
+6. Explique o que o código Scala abaixo faz.
+
+Cria um arquivo mostrando as ocorrencias de cada palavra do arquivo lido.
+
+#########################################################################
+Desenvolvimento do desafio proposto
+#########################################################################
+
+##### Shell Script - recupera, padroniza e une os arquivos
+
+curl l ftp://ita.ee.lbl.gov/traces/NASA_access_log_Jul95.gz >> /home/user/NASA_access_log_Jul95.gz
+curl l ftp://ita.ee.lbl.gov/traces/NASA_access_log_Aug95.gz >> /home/user/NASA_access_log_Aug95.gz
+
+cd /home/user
+gzip -d  NASA_access_log_Jul95.gz
+gzip -d  NASA_access_log_Aug95.gz
+
+cat NASA_access_log_Jul95   | sed 's/^/\"/g'   > NASA_access_log_Jul95_1
+cat NASA_access_log_Jul95_1 | sed 's/\[/\" /g' > NASA_access_log_Jul95_2
+cat NASA_access_log_Jul95_2 | sed 's/\]/\"/g'  > NASA_access_log_Jul95_3
+
+cat NASA_access_log_Aug95   | sed 's/^/\"/g'   > NASA_access_log_Aug95_1
+cat NASA_access_log_Aug95_1 | sed 's/\[/\" /g' > NASA_access_log_Aug95_2
+cat NASA_access_log_Aug95_2 | sed 's/\]/\"/g'  > NASA_access_log_Aug95_3
+
+cat NASA_access_log_Jul95_3 > final_file
+cat NASA_access_log_Aug95_3 >> final_file
+##### 
+
+##### Script Spark
+
+#variables
+sourceFilesPath = "/home/user/"
+
+#imports
+from pyspark.sql import *
+from datetime import datetime
+from operator import add
+
+conf = (SparkConf()
+         .setMaster("local")
+         .setAppName("SPark")
+         .set("spark.executor.memory", "2g"))
+sc = SparkContext(conf = conf)
+
+sourceDf = spark.read.format('text').load(sourceFilesPath)
+
+InputFile = sc.sourceDf('final_file')
+InputFile = InputFile.cache()
+
+# Número de hosts únicos
+host_count = InputFile.flatMap(lambda line: line.split(' ')[0]).distinct().count()
+print(host_count)
+
+# O total de erros 404
+def response_code_404(line):
+    try:
+        code = line.split(' ')[-2]
+        if code == '404':
+            return True
+    except:
+        pass
+    return False
+    
+count_404 = july.filter(response_code_404).cache()
+print(july_404.count())
+
+# Os 5 URLs que mais causaram erro 404
+def top5_endpoints(rdd):
+    endpoints = rdd.map(lambda line: line.split('"')[1].split(' ')[1])
+    counts = endpoints.map(lambda endpoint: (endpoint, 1)).reduceByKey(add)
+    top = counts.sortBy(lambda pair: -pair[1]).take(5)
+
+    for endpoint, count in top:
+        print(endpoint, count)
+        
+    return top
+
+top5_endpoints(count_404)
+print(top5_endpoints.count())
+
+# Quantidade de erros 404 por dia
+def daily_count(rdd):
+    days = rdd.map(lambda line: line.split('[')[1].split(':')[0])
+    counts = days.map(lambda day: (day, 1)).reduceByKey(add).collect()
+
+    for day, count in counts:
+        print(day, count)
+
+    return counts
+
+daily_count(count_404)
+print(daily_count.count())
+
+# O total de bytes retornados
+def accumulated_byte_count(rdd):
+    def byte_count(line):
+        try:
+            count = int(line.split(" ")[-1])
+            if count < 0:
+                raise ValueError()
+            return count
+        except:
+            return 0
+        
+    count = rdd.map(byte_count).reduce(add)
+    return count
+
+print(accumulated_byte_count(InputFile))
+##### 
+
+##### Segunda opção - script Hive
+
+/usr/bin/hive -S -e "CREATE TABLE IF NOT EXISTS database.NASA_access_log(
+  host_requisition string, 
+  timestamp_requisition string, 
+  requisition string, 
+  return_code_http string, 
+  bytes_returned string)
+ROW FORMAT DELIMITED 
+  FIELDS TERMINATED BY '\040' 
+STORED AS INPUTFORMAT 
+  'org.apache.hadoop.mapred.TextInputFormat' 
+OUTPUTFORMAT 
+  'org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat';"
+
+/usr/bin/hive -e "database.NASA_access_log;load data inpath '/home/user/final_file' into table database.NASA_access_log"
+
+/usr/bin/hive -e "select count(distinct host_requisition) as host_requisition from database.NASA_access_log;"
+
+/usr/bin/hive -e "select count(*) as errors_404 from database.NASA_access_log where return_code_http = '404';"
+
+/usr/bin/hive -e "select requisition, count(*) as cnt_404
+                    from database.NASA_access_log 
+                   WHERE where return_code_http = '404'
+                   group by requisition
+                   order by 2 desc
+                   limit 5;"
+
+/usr/bin/hive -e "select cast(timestamp_requisition as date) as dia, count(*) as errors_404 
+                    from database.NASA_access_log 
+                   where return_code_http = '404'
+                   group by cast(timestamp_requisition as date);"
+
+/usr/bin/hive -e "select sum(cast(bytes_returned as bigint)) as total_bytes from database.NASA_access_log;"
+##### 
